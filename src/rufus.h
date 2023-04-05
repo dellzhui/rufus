@@ -34,6 +34,8 @@
  */
 //#define RUFUS_TEST
 
+#define RUFUS_BATCH_ENABLE
+
 #define APPLICATION_NAME            "Rufus"
 #if defined(_M_AMD64)
 #define APPLICATION_ARCH            "x64"
@@ -532,6 +534,7 @@ extern RUFUS_UPDATE update;
 extern RUFUS_IMG_REPORT img_report;
 extern HINSTANCE hMainInstance;
 extern HWND hMainDialog, hLogDialog, hStatus, hDeviceList, hCapacity, hImageOption;
+extern char gDefaultDriveLetter;
 extern HWND hPartitionScheme, hTargetSystem, hFileSystem, hClusterSize, hLabel, hBootType, hNBPasses, hLog;
 extern HWND hInfo, hProgress, hDiskID;
 extern WORD selected_langid;

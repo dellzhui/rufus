@@ -1033,8 +1033,31 @@ BOOL GetDevices(DWORD devnum)
 			}
 		}
 	}
+
+    if(!found && gDefaultDriveLetter != 0) {
+        for (i = 0; i < ComboBox_GetCount(hDeviceList); i++) {
+    	    DWORD DriveIndex = (DWORD)ComboBox_GetItemData(hDeviceList, i);
+    	    char drive_letters[27] = { 0 };
+
+        	if (!GetDriveLetters(DriveIndex, drive_letters)) {
+        		uprintf("Failed to get a drive letter");
+        		continue;
+        	}
+        	int len = (int)strlen(drive_letters);
+        	if (len == 0) {
+                continue;
+        	}
+        	uprintf("DriveLetters is %c\n", drive_letters[0]);
+        	if(gDefaultDriveLetter == drive_letters[0]) {
+				found = TRUE;
+				break;
+        	}
+    	}
+    }
+	
 	if (!found)
 		i = 0;
+
 	IGNORE_RETVAL(ComboBox_SetCurSel(hDeviceList, i));
 	SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE<<16) | IDC_DEVICE, 0);
 	r = TRUE;

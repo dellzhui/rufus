@@ -92,6 +92,8 @@ static HWND hSelectImage = NULL, hStart = NULL;
 static char szTimer[12] = "00:00:00";
 static unsigned int timer;
 static char uppercase_select[2][64], uppercase_start[64], uppercase_close[64], uppercase_cancel[64];
+static bool gBatchFormatThreadStarted = FALSE, gFormatRunning = FALSE, gCopyThreadStarted = FALSE, gCopyRunning = FALSE;
+static char *gCopyTargetFile = NULL;
 
 extern HANDLE update_check_thread, wim_thread;
 extern BOOL enable_iso, enable_joliet, enable_rockridge, enable_extra_hashes;
@@ -119,6 +121,7 @@ loc_cmd* selected_locale = NULL;
 WORD selected_langid = MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT);
 DWORD MainThreadId;
 HWND hDeviceList, hPartitionScheme, hTargetSystem, hFileSystem, hClusterSize, hLabel, hBootType, hNBPasses, hLog = NULL;
+char gDefaultDriveLetter = 0;
 HWND hImageOption, hLogDialog = NULL, hProgress = NULL, hDiskID;
 HANDLE dialog_handle = NULL;
 BOOL is_x86_32, use_own_c32[NB_OLD_C32] = { FALSE, FALSE }, mbr_selected_by_user = FALSE, lock_drive = TRUE;
@@ -1877,6 +1880,122 @@ out:
 	ExitThread((DWORD)ret);
 }
 
+#ifdef RUFUS_BATCH_ENABLE
+static int formatWithDriveLetter(char drive_letter)
+{
+    gFormatRunning = TRUE;
+
+    selected_fs = 1;
+    preselected_fs = 1;
+    gDefaultDriveLetter = drive_letter;
+    GetDevices(0);
+
+    ComboBox_SetCurSel(hBootType, 0);
+	SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE << 16) | IDC_BOOT_SELECTION, 0);
+	uprintf("we will start formating %c", drive_letter);
+	Sleep(1000);
+	SendMessage(hMainDialog, WM_COMMAND, (WPARAM)IDC_START, 0);
+
+    int wait_timeout_s = 60, wait_time_unit_s = 1, wait_index = 0;
+	while((gFormatRunning == TRUE) && ((wait_index * wait_time_unit_s) < wait_timeout_s)) {
+        uprintf("format %C in process, index is %d", drive_letter, wait_index);
+        Sleep(1000*wait_time_unit_s);
+        wait_index++;
+	}
+	if(gFormatRunning == TRUE) {
+        uprintf("format %C failed", drive_letter);
+        gFormatRunning = FALSE;
+        return -1;
+	}
+	uprintf("format %C succeed", drive_letter);
+    return 0;
+}
+
+static DWORD WINAPI BatchFormatThread(LPVOID param)
+{
+    if(gBatchFormatThreadStarted) {
+        uprintf("BatchFormatThread already started");
+        ExitThread((DWORD)-1);
+    }
+    gBatchFormatThreadStarted = TRUE;
+    int i = 0, ret = 0;
+
+    for (i = 0; i < ComboBox_GetCount(hDeviceList); i++) {
+	    DWORD DriveIndex = (DWORD)ComboBox_GetItemData(hDeviceList, i);
+	    char drive_letters[27] = { 0 };
+
+    	if (!GetDriveLetters(DriveIndex, drive_letters)) {
+    		uprintf("Failed to get a drive letter");
+    		continue;
+    	}
+    	int len = (int)strlen(drive_letters);
+    	if (len == 0) {
+            continue;
+    	}
+    	uprintf("we will format %C", drive_letters[0]);
+    	ret |= formatWithDriveLetter(drive_letters[0]);
+	}
+
+    if(ret == 0) {
+        uprintf("format all succeed");
+    } else {
+        uprintf("some SD cards failed to format");
+    }
+    gBatchFormatThreadStarted = FALSE;
+    ExitThread((DWORD)ret);
+}
+
+static DWORD WINAPI CopyThreadImpl(LPVOID param)
+{
+    int ret = -1;
+    char *drive_letters_ptr = (char *)param;
+    char driver_letter = *drive_letters_ptr;
+    uprintf("we will copy %s to %C", gCopyTargetFile, driver_letter);
+    free(drive_letters_ptr);
+    drive_letters_ptr = NULL;
+    ExitThread((DWORD)ret);
+}
+
+static DWORD WINAPI CopyThread(LPVOID param)
+{
+    if(gCopyThreadStarted) {
+        uprintf("CopyThread already started");
+        ExitThread((DWORD)-1);
+    }
+    gCopyThreadStarted = TRUE;
+
+    uprintf("selected copy file path is %x", gCopyTargetFile != NULL ? gCopyTargetFile : 0);
+
+    int i = 0, ret = 0;
+    for (i = 0; i < ComboBox_GetCount(hDeviceList); i++) {
+	    DWORD DriveIndex = (DWORD)ComboBox_GetItemData(hDeviceList, i);
+	    char drive_letters[27] = { 0 };
+
+    	if (!GetDriveLetters(DriveIndex, drive_letters)) {
+    		uprintf("Failed to get a drive letter");
+    		continue;
+    	}
+    	int len = (int)strlen(drive_letters);
+    	if (len == 0) {
+            continue;
+    	}
+    	char *drive_letters_ptr = (char *)malloc(1);
+    	*drive_letters_ptr = drive_letters[0];
+    	if (CreateThread(NULL, 0, CopyThreadImpl, (LPVOID)(uintptr_t)drive_letters_ptr, 0, NULL) == NULL) {
+			uprintf("Unable to start copy thread");
+			free(drive_letters_ptr);
+			drive_letters_ptr = NULL;
+		} else {
+            uprintf("start copy thread succeed");
+		}
+	}
+	
+    
+    gCopyThreadStarted = FALSE;
+    ExitThread((DWORD)-1);
+}
+#endif
+
 static __inline const char* IsAlphaOrBeta(void)
 {
 #if defined(ALPHA)
@@ -2089,7 +2208,9 @@ static void InitDialog(HWND hDlg)
 	StrArrayCreate(&ImageList, 16);
 	// Set various checkboxes
 	CheckDlgButton(hDlg, IDC_QUICK_FORMAT, BST_CHECKED);
+#ifndef RUFUS_BATCH_ENABLE
 	CheckDlgButton(hDlg, IDC_EXTENDED_LABEL, BST_CHECKED);
+#endif
 
 	CreateAdditionalControls(hDlg);
 	SetSectionHeaders(hDlg);
@@ -2649,6 +2770,15 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			partition_type = (int)ComboBox_GetCurItemData(hTargetSystem);
 			return (INT_PTR)TRUE;
 		case IDC_SELECT:
+#ifdef RUFUS_BATCH_ENABLE
+            {
+				EXT_DECL(img_ext2, NULL, __VA_GROUP__("*.iso;*.img;*.vhd;*.usb;*.bz2;*.bzip2;*.gz;*.lzma;*.xz;*.Z;*.zip;*.wim;*.esd;*.vtsi"),
+						__VA_GROUP__(lmprintf(MSG_036)));
+				//gCopyTargetFile = FileDialog(FALSE, NULL, &img_ext2, 0);
+				gCopyTargetFile = FileDialog(FALSE, NULL, &img_ext2, 0);
+				break;
+			}
+#endif
 			// Ctrl-SELECT is used to select an additional archive of files to extract
 			// For now only zip archives are supported.
 			if (GetKeyState(VK_CONTROL) & 0x8000) {
@@ -2713,6 +2843,26 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			}
 			break;
 		case IDC_START:
+#ifdef RUFUS_BATCH_ENABLE
+            if(gCopyTargetFile != NULL) {
+                if(gCopyThreadStarted == FALSE) {
+                    if (CreateThread(NULL, 0, CopyThread, NULL, 0, NULL) == NULL) {
+            			uprintf("Unable to start copy thread");
+            		} else {
+                        uprintf("start copy thread succeed");
+            		}
+    		    }
+    		    break;
+            } else {
+    		    if(gBatchFormatThreadStarted == FALSE) {
+                    if (CreateThread(NULL, 0, BatchFormatThread, NULL, 0, NULL) == NULL) {
+            			uprintf("Unable to start batch format thread");
+            		} else {
+                        break;
+            		}
+    		    }
+		    }
+#endif
 			if (format_thread != NULL)
 				return (INT_PTR)TRUE;
 			// Just in case
@@ -2918,6 +3068,11 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		// Let's not take any risk: Ask Windows to redraw the whole dialog before we exit init
 		RedrawWindow(hMainDialog, NULL, NULL, RDW_ALLCHILDREN | RDW_UPDATENOW);
 		InvalidateRect(hMainDialog, NULL, TRUE);
+
+#ifdef RUFUS_BATCH_ENABLE
+		ComboBox_SetCurSel(hBootType, 0);
+	    SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE << 16) | IDC_BOOT_SELECTION, 0);
+#endif
 
 		return (INT_PTR)FALSE;
 
@@ -3125,9 +3280,11 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			goto aborted_start;
 
 		GetWindowTextU(hDeviceList, tmp, ARRAYSIZE(tmp));
+#ifndef RUFUS_BATCH_ENABLE
 		if (MessageBoxExU(hMainDialog, lmprintf(MSG_003, tmp),
 			APPLICATION_NAME, MB_OKCANCEL | MB_ICONWARNING | MB_IS_RTL, selected_langid) == IDCANCEL)
 			goto aborted_start;
+#endif
 		if ((SelectedDrive.nPartitions > 1) && (MessageBoxExU(hMainDialog, lmprintf(MSG_093),
 			lmprintf(MSG_094), MB_OKCANCEL | MB_ICONWARNING | MB_IS_RTL, selected_langid) == IDCANCEL))
 			goto aborted_start;
@@ -3139,7 +3296,9 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		nDeviceIndex = ComboBox_GetCurSel(hDeviceList);
 		DeviceNum = (DWORD)ComboBox_GetItemData(hDeviceList, nDeviceIndex);
 		InitProgress(zero_drive || write_as_image);
+		uprintf("we will start format task\n");
 		format_thread = CreateThread(NULL, 0, FormatThread, (LPVOID)(uintptr_t)DeviceNum, 0, NULL);
+		uprintf("format task started\n");
 		if (format_thread == NULL) {
 			uprintf("Unable to start formatting thread");
 			FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | APPERR(ERROR_CANT_START_THREAD);
@@ -3249,6 +3408,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		}
 		FormatStatus = 0;
 		LastWriteError = 0;
+		gFormatRunning = FALSE;
 		return (INT_PTR)TRUE;
 
 	}
@@ -3374,6 +3534,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		{"locale",     required_argument, NULL, 'l'},
 		{"filesystem", required_argument, NULL, 'f'},
 		{"wait",       required_argument, NULL, 'w'},
+		{"default driver letter",    required_argument, NULL, 'd'},
 		{0, 0, NULL, 0}
 	};
 
@@ -3507,7 +3668,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 				}
 			}
 
-			while ((opt = getopt_long(argc, argv, "ghxf:i:l:w:z:", long_options, &option_index)) != EOF) {
+			while ((opt = getopt_long(argc, argv, "ghxf:i:l:w:z:d:", long_options, &option_index)) != EOF) {
 				switch (opt) {
 				case 'x':
 					enable_HDDs = TRUE;
@@ -3552,6 +3713,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 					break;
 				case 'w':
 					wait_for_mutex = atoi(optarg);
+					break;
+				case 'd':
+					gDefaultDriveLetter = optarg[0];
 					break;
 				case 'h':
 					PrintUsage(argv[0]);
@@ -3807,6 +3971,10 @@ relaunch:
 
 	ShowWindow(hDlg, SW_SHOWNORMAL);
 	UpdateWindow(hDlg);
+
+	/*ComboBox_SetCurSel(hBootType, 0);
+	SendMessage(hDlg, WM_COMMAND, (CBN_SELCHANGE << 16) | IDC_BOOT_SELECTION, 0);
+	uprintf("AAA");*/
 
 	// Do our own event processing and process "magic" commands
 	while(GetMessage(&msg, NULL, 0, 0)) {

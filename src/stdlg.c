@@ -238,6 +238,83 @@ fallback:
 	dialog_showing--;
 }
 
+#if 0
+// 此回调函数为全局函数或静态函数;
+int CALLBACK BrowseCallbackProc( HWND hwnd, UINT uMsg, LPARAM lParam, LPARAM lpData )
+{
+    switch(uMsg)
+    {
+    case BFFM_INITIALIZED:
+        {
+            ::SendMessage(hwnd, BFFM_SETSELECTION, TRUE, (LPARAM)lpData);
+        }
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
+bool SelectFilePath( TString& strFilePath )
+{
+    TCHAR szPathName[MAX_PATH] = {0};
+    BROWSEINFO bInfo = {0};
+    TString strDefaultPath = _T("E:\\"); // 注意路径中不要带'\..\'或'\.\'符号，否则设置默认路径失败;
+    bInfo.hwndOwner = GetForegroundWindow(); // 父窗口;
+    bInfo.lpszTitle = _T("选择目录");
+    bInfo.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI /*包含一个编辑框 用户可以手动填写路径 对话框可以调整大小之类的..;*/
+        | BIF_UAHINT /*带TIPS提示*/ /*| BIF_NONEWFOLDERBUTTON 不带新建文件夹按钮*/;
+    // 关于更多的 ulFlags 参考 http://msdn.microsoft.com/en-us/library/bb773205(v=vs.85).aspx;
+    bInfo.lpfn        = (CDataBackupDlg::BrowseCallbackProc);
+    bInfo.lParam    = (LPARAM)(LPCTSTR)(strDefaultPath.c_str());
+
+    LPITEMIDLIST lpDlist;
+    lpDlist = SHBrowseForFolder(&bInfo);
+    if ( nullptr == lpDlist ) // 单击了确定按钮;
+    {
+        strFilePath.clear();
+        return false;
+    }
+    SHGetPathFromIDList(lpDlist, szPathName);
+    strFilePath = szPathName;
+    return true;
+}
+
+
+char* openFolderDialog() {
+    char szDir[MAX_PATH] = {0};
+    char *folderPath = NULL;
+    uprintf("MAX_PATH is %d", MAX_PATH);
+
+    BROWSEINFO bInfo;    // 定义文件夹选择框信息结构体
+    ZeroMemory(&bInfo, sizeof(BROWSEINFO));   // 清空结构体
+
+    // 设置文件夹选择框信息
+    bInfo.hwndOwner = NULL;
+    bInfo.pidlRoot = NULL;
+    bInfo.pszDisplayName = NULL;
+    bInfo.lpszTitle = "Select a folder:";
+    bInfo.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI;
+    bInfo.lpfn = NULL;
+
+    // 显示文件夹选择框
+    LPITEMIDLIST lpItem = SHBrowseForFolder(&bInfo);
+
+    // 如果选了文件夹，则获取文件夹路径
+    if (lpItem != NULL) {
+        SHGetPathFromIDList(lpItem, szDir);
+        CoTaskMemFree(lpItem);
+    }
+
+    uprintf("szDir is %s\n", szDir);
+
+//	folderPath = safe_strdup(szDir);
+
+    return szDir;
+}
+#endif
+
+
 /*
  * Return the UTF8 path of a file selected through a load or save dialog
  * All string parameters are UTF-8
@@ -816,6 +893,9 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
  */
 BOOL Notification(int type, const char* dont_display_setting, const notification_info* more_info,  char* title, char* format, ...)
 {
+#ifdef RUFUS_BATCH_ENABLE
+    return TRUE;
+#endif
 	BOOL ret;
 	va_list args;
 

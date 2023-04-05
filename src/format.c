@@ -1417,14 +1417,21 @@ out:
  *   Unlock the volume.
  *   Close the volume handle.
  */
+#ifdef STATIC_THREAD
+static int FormatThreadImpl(DWORD DriveIndex)
+#else
 DWORD WINAPI FormatThread(void* param)
+#endif
 {
 	int r;
 	BOOL ret, use_large_fat32, windows_to_go, actual_lock_drive = lock_drive, write_as_ext = FALSE;
 	// Windows 11 and VDS (which I suspect is what fmifs.dll's FormatEx() is now calling behind the scenes)
 	// require us to unlock the physical drive to format the drive, else access denied is returned.
 	BOOL need_logical = FALSE, must_unlock_physical = (use_vds || nWindowsVersion >= WINDOWS_11);
-	DWORD cr, DriveIndex = (DWORD)(uintptr_t)param, ClusterSize, Flags;
+	DWORD cr, /*DriveIndex = (DWORD)(uintptr_t)param, */ClusterSize, Flags;
+#ifndef STATIC_THREAD
+	DWORD DriveIndex = (DWORD)(uintptr_t)param;
+#endif
 	HANDLE hPhysicalDrive = INVALID_HANDLE_VALUE;
 	HANDLE hLogicalVolume = INVALID_HANDLE_VALUE;
 	SYSTEMTIME lt;
@@ -1974,8 +1981,84 @@ out:
 		}
 	}
 	PostMessage(hMainDialog, UM_FORMAT_COMPLETED, (WPARAM)TRUE, 0);
+#ifdef STATIC_THREAD
+	return 0;
+#else
+	ExitThread(0);
+#endif
+}
+
+#ifdef STATIC_THREAD
+static BOOL PopulateProperties(int device_index)
+{
+	char* device_tooltip;
+	char fs_name[32];
+
+	memset(&SelectedDrive, 0, sizeof(SelectedDrive));
+	EnableWindow(hStart, FALSE);
+
+	if (device_index < 0)
+		goto out;
+
+	persistence_unit_selection = -1;
+	// Get data from the currently selected drive
+	SelectedDrive.DeviceNumber = (DWORD)ComboBox_GetItemData(hDeviceList, device_index);
+	// This fills the SelectedDrive properties
+	GetDrivePartitionData(SelectedDrive.DeviceNumber, fs_name, sizeof(fs_name), FALSE);
+	SetPartitionSchemeAndTargetSystem(FALSE);
+	// Attempt to reselect the last file system explicitly set by the user
+	if (!SetFileSystemAndClusterSize((selected_fs == FS_UNKNOWN) ? fs_name : NULL)) {
+		SetProposedLabel(-1);
+		uprintf("No file system is selectable for this drive\n");
+		return FALSE;
+	}
+
+	EnableControls(TRUE, FALSE);
+
+	// Set a proposed label according to the size (eg: "256MB", "8GB")
+	static_sprintf(SelectedDrive.proposed_label, "%s",
+		SizeToHumanReadable(SelectedDrive.DiskSize, FALSE, TRUE));
+
+	// Add a tooltip (with the size of the device in parenthesis)
+	device_tooltip = (char*) malloc(safe_strlen(rufus_drive[device_index].name) + 32);
+	if (device_tooltip != NULL) {
+		if (right_to_left_mode)
+			safe_sprintf(device_tooltip, safe_strlen(rufus_drive[device_index].name) + 32, "(%s) %s",
+				SizeToHumanReadable(SelectedDrive.DiskSize, FALSE, FALSE), rufus_drive[device_index].name);
+		else
+			safe_sprintf(device_tooltip, safe_strlen(rufus_drive[device_index].name) + 32, "%s (%s)",
+				rufus_drive[device_index].name, SizeToHumanReadable(SelectedDrive.DiskSize, FALSE, FALSE));
+		CreateTooltip(hDeviceList, device_tooltip, -1);
+		free(device_tooltip);
+	}
+
+out:
+	SetProposedLabel(device_index);
+	return TRUE;
+}
+
+DWORD WINAPI FormatThread(void* param)
+{
+    int i = 0;
+	for (i = 0; i < ComboBox_GetCount(hDeviceList); i++) {
+	    DWORD DriveIndex = (DWORD)ComboBox_GetItemData(hDeviceList, i);
+	    //char volume_name = RemoveDriveLetters(item, TRUE, FALSE);
+	    char drive_letters[27] = { 0 }, drive_name[4] = "#:\\";
+
+    	if (!GetDriveLetters(DriveIndex, drive_letters)) {
+    		uprintf("Failed to get a drive letter");
+    		continue;
+    	}
+    	int len = (int)strlen(drive_letters);
+    	if (len == 0) {
+            continue;
+    	}
+    	uprintf("DriveLetters is %c\n", drive_letters[0]);
+    	FormatThreadImpl(DriveIndex);
+	}
 	ExitThread(0);
 }
+#endif
 
 DWORD WINAPI SaveImageThread(void* param)
 {
