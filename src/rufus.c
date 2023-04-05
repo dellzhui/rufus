@@ -1945,14 +1945,33 @@ static DWORD WINAPI BatchFormatThread(LPVOID param)
     ExitThread((DWORD)ret);
 }
 
+static bool is_dir(char *path)
+{
+     struct _stat buf; 
+     int result; 
+     result = _stat( path, &buf ); 
+     return (_S_IFDIR & buf.st_mode) ? TRUE : FALSE;
+}
+
 static DWORD WINAPI CopyThreadImpl(LPVOID param)
 {
     int ret = -1;
     char *drive_letters_ptr = (char *)param;
     char driver_letter = *drive_letters_ptr;
     uprintf("we will copy %s to %C", gCopyTargetFile, driver_letter);
+    
     free(drive_letters_ptr);
     drive_letters_ptr = NULL;
+    char cmd[512] = {0};
+    if(is_dir(gCopyTargetFile)) {
+        snprintf(cmd, sizeof(cmd)-1, "XCopy /E %s %C:\\", gCopyTargetFile, driver_letter);
+    } else {
+        snprintf(cmd, sizeof(cmd)-1, "Copy %s %C:\\", gCopyTargetFile, driver_letter);
+    }
+    uprintf("%s", cmd);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd)-1, "Copy [%s] to [%C:\\] succeed", gCopyTargetFile, driver_letter);
+    Notification(MSG_BATCH, NULL, NULL, "INFO", cmd);
     ExitThread((DWORD)ret);
 }
 
@@ -1966,8 +1985,10 @@ static DWORD WINAPI CopyThread(LPVOID param)
 
     uprintf("selected copy file path is %x", gCopyTargetFile != NULL ? gCopyTargetFile : 0);
 
-    int i = 0, ret = 0;
-    for (i = 0; i < ComboBox_GetCount(hDeviceList); i++) {
+    int i = 0, ret = 0, thread_index = 0;
+    HANDLE  hThreadArray[100];
+    
+    for (i = 0; i < ComboBox_GetCount(hDeviceList) && i < sizeof(hThreadArray)/sizeof(hThreadArray[0]); i++) {
 	    DWORD DriveIndex = (DWORD)ComboBox_GetItemData(hDeviceList, i);
 	    char drive_letters[27] = { 0 };
 
@@ -1981,14 +2002,26 @@ static DWORD WINAPI CopyThread(LPVOID param)
     	}
     	char *drive_letters_ptr = (char *)malloc(1);
     	*drive_letters_ptr = drive_letters[0];
-    	if (CreateThread(NULL, 0, CopyThreadImpl, (LPVOID)(uintptr_t)drive_letters_ptr, 0, NULL) == NULL) {
+    	HANDLE thread = CreateThread(NULL, 0, CopyThreadImpl, (LPVOID)(uintptr_t)drive_letters_ptr, 0, NULL);
+    	if(thread == NULL) {
 			uprintf("Unable to start copy thread");
 			free(drive_letters_ptr);
 			drive_letters_ptr = NULL;
 		} else {
             uprintf("start copy thread succeed");
+            hThreadArray[thread_index++] = thread;
 		}
 	}
+
+    uprintf("wait sub thread exit begin");
+	WaitForMultipleObjects(thread_index, hThreadArray, TRUE, INFINITE);
+	uprintf("wait sub thread exit end");
+
+	for(i=0; i<thread_index; i++) {
+        CloseHandle(hThreadArray[i]);
+	}
+	uprintf("all sub thread closed");
+	Notification(MSG_BATCH, NULL, NULL, "INFO", "all task complited");
 	
     
     gCopyThreadStarted = FALSE;
@@ -2774,8 +2807,8 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
             {
 				EXT_DECL(img_ext2, NULL, __VA_GROUP__("*.iso;*.img;*.vhd;*.usb;*.bz2;*.bzip2;*.gz;*.lzma;*.xz;*.Z;*.zip;*.wim;*.esd;*.vtsi"),
 						__VA_GROUP__(lmprintf(MSG_036)));
-				//gCopyTargetFile = FileDialog(FALSE, NULL, &img_ext2, 0);
 				gCopyTargetFile = FileDialog(FALSE, NULL, &img_ext2, 0);
+				uprintf("target copy file path is %s", gCopyTargetFile);
 				break;
 			}
 #endif

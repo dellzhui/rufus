@@ -215,6 +215,9 @@ enum notification_type {
 	MSG_WARNING,
 	MSG_ERROR,
 	MSG_QUESTION,
+#ifdef RUFUS_BATCH_ENABLE
+    MSG_BATCH,
+#endif
 	MSG_WARNING_QUESTION
 };
 typedef INT_PTR (CALLBACK *Callback_t)(HWND, UINT, WPARAM, LPARAM);
