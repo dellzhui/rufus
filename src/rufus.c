@@ -1964,9 +1964,9 @@ static DWORD WINAPI CopyThreadImpl(LPVOID param)
     drive_letters_ptr = NULL;
     char cmd[512] = {0};
     if(is_dir(gCopyTargetFile)) {
-        snprintf(cmd, sizeof(cmd)-1, "XCopy /E %s %C:\\", gCopyTargetFile, driver_letter);
+        snprintf(cmd, sizeof(cmd)-1, "XCopy /E /Y \"%s\" %C:\\", gCopyTargetFile, driver_letter);
     } else {
-        snprintf(cmd, sizeof(cmd)-1, "Copy %s %C:\\", gCopyTargetFile, driver_letter);
+        snprintf(cmd, sizeof(cmd)-1, "Copy \"%s\" %C:\\", gCopyTargetFile, driver_letter);
     }
     uprintf("%s", cmd);
     system(cmd);
@@ -2021,7 +2021,7 @@ static DWORD WINAPI CopyThread(LPVOID param)
         CloseHandle(hThreadArray[i]);
 	}
 	uprintf("all sub thread closed");
-	Notification(MSG_BATCH, NULL, NULL, "INFO", "all task complited");
+	Notification(MSG_BATCH, NULL, NULL, "INFO", "all task completed");
 	
     
     gCopyThreadStarted = FALSE;
